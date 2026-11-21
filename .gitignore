@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.pytest_cache/
+reports/
+*.pyc
+dashboard/node_modules/
+dashboard/dist/
+*.tsbuildinfo
