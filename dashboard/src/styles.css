@@ -279,7 +279,12 @@ button:disabled {
   align-content: start;
   gap: 40px;
   min-width: 0;
-}.section-head {
+}
+.primary-col > *,
+.side-col > * {
+  min-width: 0; /* otherwise the board table widens the grid track */
+}
+.section-head {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;

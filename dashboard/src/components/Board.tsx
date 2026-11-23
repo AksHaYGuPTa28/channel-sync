@@ -47,8 +47,9 @@ function BoardImpl({ rows, base }: Props) {
                   aria-label={FULL.format(d)}
                 >
                   {monthStart && <span className="month">{MONTH.format(d)}</span>}
+                  {/* columns are too narrow for every date */}
                   <span className="day" aria-hidden>
-                    {day}
+                    {monthStart || day % 5 === 0 ? day : ""}
                   </span>
                 </th>
               );
