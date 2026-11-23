@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncpg
 
+from app.ingest import retry_stats
+
 DOUBLE_BOOKINGS_SQL = """
 SELECT count(*)
 FROM reservations a
@@ -35,4 +37,5 @@ async def snapshot(pool: asyncpg.Pool) -> dict:
         "outbox": await _counts(pool, "outbox", "status"),
         "push_latency_ms": {k: round(latency[k] or 0, 1) for k in ("p50", "p95", "p99")},
         "push_retries": int(latency["retries"] or 0),
+        "ingest_deadlock_retries": retry_stats["deadlock_retries"],
     }

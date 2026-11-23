@@ -1,8 +1,10 @@
 import asyncio
 from datetime import date
 
+import asyncpg
 import pytest
 
+from app import ingest
 from app.ingest import ChannelEvent, apply_event
 from app.metrics import DOUBLE_BOOKINGS_SQL
 from tests.conftest import CHANNELS
@@ -118,3 +120,30 @@ async def test_unknown_listing(pool, unit):
     e.listing_id = "nope"
     assert await apply_event(pool, e) == "unknown_listing"
     assert await pool.fetchval("SELECT count(*) FROM reservations") == 0
+
+
+async def test_deadlock_is_retried(pool, unit, monkeypatch):
+    real = ingest._apply_in_txn
+    calls = 0
+
+    async def flaky(p, e):
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise asyncpg.DeadlockDetectedError("deadlock detected")
+        return await real(p, e)
+
+    monkeypatch.setattr(ingest, "_apply_in_txn", flaky)
+    before = ingest.retry_stats["deadlock_retries"]
+    assert await apply_event(pool, ev()) == "applied"
+    assert ingest.retry_stats["deadlock_retries"] - before == 2
+
+
+async def test_hot_unit_under_heavy_contention(pool, unit):
+    events = [
+        ev(channel=CHANNELS[i % 3], rid=f"H{i}", ci=date(2027, 7, 1 + i % 5), co=date(2027, 7, 8))
+        for i in range(300)
+    ]
+    outcomes = await asyncio.gather(*(apply_event(pool, e) for e in events))
+    assert outcomes.count("applied") == 1
+    assert await pool.fetchval(DOUBLE_BOOKINGS_SQL) == 0

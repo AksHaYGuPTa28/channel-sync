@@ -7,7 +7,9 @@ the `no_double_booking` exclusion constraint, not by anything in here.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 from datetime import date
 from typing import Literal
 
@@ -18,6 +20,9 @@ log = logging.getLogger(__name__)
 
 EventType = Literal["reservation.created", "reservation.modified", "reservation.cancelled"]
 Outcome = Literal["applied", "conflict", "duplicate", "stale", "unknown_listing"]
+
+MAX_ATTEMPTS = 6
+retry_stats = {"deadlock_retries": 0}
 
 
 class ChannelEvent(BaseModel):
@@ -33,6 +38,21 @@ class ChannelEvent(BaseModel):
 
 
 async def apply_event(pool: asyncpg.Pool, ev: ChannelEvent) -> Outcome:
+    # The per-unit lock in _apply means we shouldn't see deadlocks any more, but if one
+    # does happen nothing was committed, so retrying the whole thing is safe.
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            return await _apply_in_txn(pool, ev)
+        except (asyncpg.DeadlockDetectedError, asyncpg.SerializationError):
+            if attempt == MAX_ATTEMPTS - 1:
+                raise
+            retry_stats["deadlock_retries"] += 1
+            log.warning("deadlock applying %s/%s, retrying", ev.channel, ev.event_id)
+            await asyncio.sleep(random.uniform(0, 0.01 * 2**attempt))
+    raise AssertionError("unreachable")
+
+
+async def _apply_in_txn(pool: asyncpg.Pool, ev: ChannelEvent) -> Outcome:
     async with pool.acquire() as con, con.transaction():
         inserted = await con.fetchval(
             """
@@ -66,11 +86,9 @@ async def _apply(con: asyncpg.Connection, ev: ChannelEvent) -> Outcome:
         log.info("webhook for unknown listing %s/%s", ev.channel, ev.listing_id)
         return "unknown_listing"
 
-    # serialise events for the same reservation, including the first insert where
-    # there's no row to lock yet
-    await con.execute(
-        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", f"{ev.channel}:{ev.reservation_id}"
-    )
+    # Serialise writers per unit. Without this, two overlapping inserts wait on each other's
+    # exclusion check and deadlock, and on a busy unit that happens over and over.
+    await con.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", f"unit:{listing['unit_id']}")
 
     existing = await con.fetchrow(
         "SELECT * FROM reservations WHERE channel = $1 AND external_id = $2 FOR UPDATE",

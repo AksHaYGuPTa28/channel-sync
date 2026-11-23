@@ -49,6 +49,7 @@ def print_report(r: dict) -> None:
     print(f"reservations  {e['reservations']}")
     print(f"outbox        {e['outbox']} retries={e['push_retries']}")
     print(f"push ms       {e['push_latency_ms']}")
+    print(f"deadlocks     {e['ingest_deadlock_retries']} retried")
     print(f"breaker trips {r['circuit_breaker_opens']}")
     print(f"reconciler    {r['healed_by_reconciler']}")
     print()
