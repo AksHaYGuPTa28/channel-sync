@@ -1,4 +1,4 @@
-"""Outbox relay: pushes calendar state and corrections out to the channels.
+"""Outbox relay: pushes calendars, corrections and approved guest messages out to the channels.
 
 Safe to run many of these. Rows are claimed with SKIP LOCKED and leased via locked_until, so
 a crashed worker's rows get picked up again. Delivery is at-least-once, which is fine because
@@ -13,6 +13,7 @@ import logging
 import asyncpg
 
 from app.channel_client import ChannelClient, ChannelError, VersionConflict
+from app.guest_comms import mark_sent
 from app.resilience import backoff_seconds
 
 log = logging.getLogger(__name__)
@@ -58,6 +59,8 @@ async def process(pool: asyncpg.Pool, client: ChannelClient, row) -> None:
     try:
         if row["kind"] == "sync_calendar":
             await _push_calendar(pool, client, row)
+        elif row["kind"] == "guest_message":
+            await client.send_guest_message(channel, row["external_listing_id"], row["payload"])
         else:
             await client.correct_reservation(channel, row["external_listing_id"], row["payload"])
     except VersionConflict:
@@ -76,6 +79,8 @@ async def process(pool: asyncpg.Pool, client: ChannelClient, row) -> None:
 
     breaker.record_success()
     await finish(pool, row["id"], "done")
+    if row["kind"] == "guest_message":
+        await mark_sent(pool, row["payload"]["message_id"])
 
 
 async def _push_calendar(pool, client: ChannelClient, row) -> None:

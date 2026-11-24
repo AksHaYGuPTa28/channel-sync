@@ -37,6 +37,7 @@ class Booking:
     status: str = "confirmed"
     version: int = 1
     guest: str = ""
+    messages: dict[int, str] = field(default_factory=dict)  # message_id -> body, from the host
 
 
 @dataclass
@@ -77,6 +78,7 @@ class MockChannel:
             "webhooks_dropped": 0,
             "api_errors_injected": 0,
             "corrections_applied": 0,
+            "guest_messages_delivered": 0,
         }
         self._event_seq = itertools.count(1)
         self._tasks: set[asyncio.Task] = set()
@@ -219,6 +221,16 @@ class MockChannel:
             self.stats["corrections_applied"] += 1
             # a host-side change fires a webhook on real channels too
             self._emit(b, "reservation.cancelled" if b.status == "cancelled" else "reservation.modified")
+            return {"ok": True}
+
+        @app.post("/listings/{listing}/reservations/{rid}/messages")
+        async def message_guest(listing: str, rid: str, body: dict):
+            if err := await self._maybe_fail():
+                return err
+            b = self.listings[listing].bookings[rid]
+            if body["message_id"] not in b.messages:  # idempotent on message_id
+                b.messages[body["message_id"]] = body["body"]
+                self.stats["guest_messages_delivered"] += 1
             return {"ok": True}
 
         @app.get("/listings/{listing}")

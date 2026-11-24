@@ -46,6 +46,11 @@ class ChannelClient:
         rid = payload["reservation_id"]
         await self._request(channel, "POST", f"/listings/{listing}/reservations/{rid}/correct", json=payload)
 
+    async def send_guest_message(self, channel: str, listing: str, payload: dict) -> None:
+        rid = payload["reservation_id"]
+        body = {"message_id": payload["message_id"], "body": payload["body"]}
+        await self._request(channel, "POST", f"/listings/{listing}/reservations/{rid}/messages", json=body)
+
     async def get_listing_state(self, channel: str, listing: str) -> dict:
         resp = await self._request(channel, "GET", f"/listings/{listing}")
         return resp.json()

@@ -34,8 +34,10 @@ async def snapshot(pool: asyncpg.Pool) -> dict:
         "events": await _counts(pool, "inbound_events", "outcome"),
         "reservations": await _counts(pool, "reservations", "status"),
         "conflicts": await _counts(pool, "conflicts", "kind"),
+        "guest_messages": await _counts(pool, "guest_messages", "status"),
         "outbox": await _counts(pool, "outbox", "status"),
         "push_latency_ms": {k: round(latency[k] or 0, 1) for k in ("p50", "p95", "p99")},
         "push_retries": int(latency["retries"] or 0),
         "ingest_deadlock_retries": retry_stats["deadlock_retries"],
+        "relocations_gave_up_busy": retry_stats["relocations_gave_up_busy"],
     }
