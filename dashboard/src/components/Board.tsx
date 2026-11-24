@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { CHANNEL_NAMES, type Cell } from "../types";
+import { CHANNEL_NAMES, type BoardRow, type Cell } from "../types";
 
 const MONTH = new Intl.DateTimeFormat("en-GB", { month: "short" });
 const FULL = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" });
@@ -13,14 +13,14 @@ function nightDate(base: string, i: number): Date {
 function describe(unit: string, date: Date, [owner, oversold, stale]: Cell): string {
   const parts = [`${unit}, night of ${FULL.format(date)}:`];
   parts.push(owner ? `held by ${CHANNEL_NAMES[owner]}.` : "free.");
-  if (oversold) parts.push("Sold to more than one guest on the booking sites; correction on its way.");
+  if (oversold) parts.push("Two guests hold this night; one is being moved or cancelled.");
   if (stale.length)
     parts.push(`Calendar not yet updated on ${stale.map((c) => CHANNEL_NAMES[c]).join(" and ")}.`);
   return parts.join(" ");
 }
 
 interface Props {
-  rows: { unit: string; cells: Cell[] }[];
+  rows: BoardRow[];
   base: string;
 }
 
@@ -59,7 +59,10 @@ function BoardImpl({ rows, base }: Props) {
         <tbody>
           {rows.map((row) => (
             <tr key={row.unit}>
-              <th scope="row">{row.unit}</th>
+              <th scope="row">
+                {row.unit}
+                <span className="room-type">{row.room_type}</span>
+              </th>
               {row.cells.map((cell, i) => {
                 const [owner, oversold, stale] = cell;
                 const cls = [
@@ -97,7 +100,7 @@ export function BoardLegend() {
       </li>
       <li>
         <span className="swatch night oversold" />
-        Sold twice on the sites, being corrected
+        Two guests on one night, being sorted out
       </li>
       <li>
         <span className="swatch night stale" />A site's calendar is behind

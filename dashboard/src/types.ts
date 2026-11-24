@@ -42,12 +42,38 @@ export interface Check {
 
 export interface ConflictRow {
   at: string;
-  kind: "booking_rejected" | "modification_rejected";
+  kind: "guest_relocated" | "booking_rejected" | "modification_rejected";
   unit: string;
+  moved_to: string | null;
   winner: Channel | null;
   loser: Channel;
   check_in: string;
   check_out: string;
+}
+
+export interface InboxMessage {
+  id: number;
+  guest: string | null;
+  channel: Channel;
+  check_in: string;
+  check_out: string;
+  from_unit: string;
+  to_unit: string;
+  upgrade: boolean;
+  guest_cancelled: boolean;
+  body: string | null;
+  drafted_by: string | null;
+}
+
+export interface Inbox {
+  counts: Record<string, number>;
+  messages: InboxMessage[];
+}
+
+export interface BoardRow {
+  unit: string;
+  room_type: string;
+  cells: Cell[];
 }
 
 export interface Snapshot {
@@ -60,6 +86,7 @@ export interface Snapshot {
     events: Record<string, number>;
     reservations: Record<string, number>;
     conflicts: Record<string, number>;
+    guest_messages: Record<string, number>;
     outbox: Record<string, number>;
     push_latency_ms: { p50: number; p95: number; p99: number };
     push_retries: number;
@@ -68,8 +95,9 @@ export interface Snapshot {
   channels?: Record<Channel, ChannelState>;
   healed?: { missed_events_ingested: number; calendars_resynced: number; corrections_requeued: number };
   timeline?: Sample[];
-  board?: { unit: string; cells: Cell[] }[];
+  board?: BoardRow[];
   conflicts?: ConflictRow[];
+  inbox?: Inbox;
   checks?: Record<string, Check> | null;
   base_date?: string;
 }

@@ -27,3 +27,7 @@ export const startRun = (body: {
 
 export const setOutage = (channel: Channel, down: boolean) =>
   send(`/api/channels/${channel}/outage`, { down });
+
+export const approveMessage = (id: number, body: string) => send(`/api/inbox/${id}/approve`, { body });
+
+export const discardMessage = (id: number) => send(`/api/inbox/${id}/discard`, {});

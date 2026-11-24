@@ -3,6 +3,7 @@ import { fetchState, setOutage, startRun } from "./api";
 import { Board, BoardLegend } from "./components/Board";
 import { Channels } from "./components/Channels";
 import { ConflictFeed } from "./components/ConflictFeed";
+import { Inbox } from "./components/Inbox";
 import { Timeline } from "./components/Timeline";
 import type { Channel, Phase, Snapshot } from "./types";
 
@@ -20,7 +21,7 @@ const PHASE_TEXT: Record<Phase, string> = {
 
 const CHECK_TEXT: Record<string, string> = {
   no_double_bookings_in_db: "No night sold twice in the database",
-  no_double_bookings_on_channels: "No night held by two guests on the sites",
+  no_double_bookings_on_channels: "No apartment held by two guests on the same night",
   channels_agree_with_db: "Every site's bookings match the database",
   calendars_match_db: "Every site's calendar matches the database",
 };
@@ -57,6 +58,11 @@ export default function App() {
   const running = RUNNING.includes(phase);
   const latest = snap?.timeline?.at(-1);
 
+  const refresh = useCallback(() => {
+    window.clearTimeout(timer.current);
+    poll();
+  }, [poll]);
+
   async function onStart(e: FormEvent) {
     e.preventDefault();
     setError(null);
@@ -92,8 +98,9 @@ export default function App() {
         <div className="title-block">
           <h1>Channel sync</h1>
           <p className="lede">
-            Three booking sites sell the same 12 apartments. When two sites sell the same night, the database
-            keeps the first booking and the other site is told to cancel.
+            Three booking sites sell the same 12 apartments. When two sites sell the same night, the first
+            booking keeps the apartment and the second guest is moved to a comparable one that's free. You
+            approve what they're told.
           </p>
         </div>
         <form className="run-form" onSubmit={onStart}>
@@ -163,11 +170,13 @@ export default function App() {
         </div>
         <div className="fact">
           <span className="fact-value tone-oversold">{latest?.oversold_nights ?? 0}</span>
-          <span className="fact-label">Nights oversold on the sites right now, waiting for a correction</span>
+          <span className="fact-label">Nights with two guests right now, waiting to be sorted out</span>
         </div>
         <div className="fact">
-          <span className="fact-value">{sum(snap?.engine?.conflicts)}</span>
-          <span className="fact-label">Clashes caught and resolved</span>
+          <span className="fact-value">{snap?.engine?.conflicts?.guest_relocated ?? 0}</span>
+          <span className="fact-label">
+            Guests moved to a free apartment, out of {sum(snap?.engine?.conflicts)} clashes
+          </span>
         </div>
         <div className="fact">
           <span className="fact-value">{latest?.queue ?? 0}</span>
@@ -190,6 +199,8 @@ export default function App() {
             ))}
           </ul>
           <p className="results-detail">
+            {snap.engine?.conflicts?.guest_relocated ?? 0} guests moved to another apartment,{" "}
+            {snap.engine?.conflicts?.booking_rejected ?? 0} cancelled because nothing comparable was free.{" "}
             {sum(snap.engine?.events)} webhooks handled, {snap.engine?.events?.stale ?? 0} late ones ignored,{" "}
             {snap.healed?.missed_events_ingested ?? 0} picked up by the reconciler,{" "}
             {snap.engine?.push_retries ?? 0} pushes retried. 95% of updates reached the sites within{" "}
@@ -218,6 +229,10 @@ export default function App() {
         </div>
 
         <aside className="side-col">
+          <section aria-labelledby="inbox-title">
+            <h2 id="inbox-title">Messages to moved guests</h2>
+            <Inbox inbox={snap?.inbox} onChange={refresh} />
+          </section>
           <section aria-labelledby="channels-title">
             <h2 id="channels-title">Booking sites</h2>
             {snap?.channels ? (

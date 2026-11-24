@@ -13,7 +13,10 @@ function sentence(c: ConflictRow): string {
   if (c.kind === "modification_rejected") {
     return `A ${loser} guest tried to move onto nights ${winner} already sold. Their original dates were kept.`;
   }
-  return `${winner} sold these nights first. The ${loser} booking was cancelled on ${loser}.`;
+  if (c.kind === "guest_relocated") {
+    return `${winner} sold these nights first. The ${loser} guest was moved to ${c.moved_to} and keeps their booking.`;
+  }
+  return `${winner} sold these nights first and nothing comparable was free, so the ${loser} booking was cancelled.`;
 }
 
 export function ConflictFeed({ rows }: { rows: ConflictRow[] }) {

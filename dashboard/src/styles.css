@@ -572,6 +572,78 @@ button:disabled {
   color: var(--muted);
 }
 
+/* inbox */
+.inbox-summary {
+  margin-bottom: 8px;
+  font-size: var(--step--1);
+  color: var(--muted);
+}
+.inbox {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 46rem;
+  overflow-y: auto;
+}
+.inbox-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.inbox-who,
+.inbox-note {
+  font-size: var(--step--1);
+}
+.inbox-note {
+  color: var(--muted);
+}
+.inbox-move {
+  font-weight: 650;
+}
+.tag {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--ok);
+  color: var(--paper);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  vertical-align: 2px;
+}
+.inbox-item textarea {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--step--1);
+  line-height: 1.45;
+  resize: vertical;
+}
+.inbox-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+button.primary.small {
+  padding: 5px 12px;
+  font-size: var(--step--1);
+}
+.board tbody th .room-type {
+  display: block;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
 .foot {
   margin-top: 48px;
   padding-top: 16px;
