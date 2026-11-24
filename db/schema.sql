@@ -11,7 +11,9 @@ CREATE TABLE tenants (
 CREATE TABLE units (
   id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id uuid NOT NULL REFERENCES tenants(id),
-  name      text NOT NULL
+  name      text NOT NULL,
+  room_type text NOT NULL DEFAULT 'standard',
+  bedrooms  integer NOT NULL DEFAULT 1
 );
 
 -- a unit's listing on one channel
@@ -25,6 +27,8 @@ CREATE TABLE channel_listings (
   UNIQUE (unit_id, channel)
 );
 
+-- unit_id is the unit the guest actually sleeps in. Usually that's the listing's unit, but a
+-- guest who lost a clash can be moved to another unit and keep their channel booking.
 CREATE TABLE reservations (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id       uuid NOT NULL REFERENCES tenants(id),
@@ -56,24 +60,49 @@ CREATE TABLE inbound_events (
 );
 
 -- loser = whichever booking committed second
+--   guest_relocated:       loser moved to moved_to_unit_id, keeps their booking
+--   booking_rejected:      nothing comparable was free, loser cancelled on its channel
+--   modification_rejected: date change onto sold nights, old dates kept
 CREATE TABLE conflicts (
   id                     bigserial PRIMARY KEY,
   tenant_id              uuid NOT NULL REFERENCES tenants(id),
   unit_id                uuid NOT NULL REFERENCES units(id),
-  kind                   text NOT NULL CHECK (kind IN ('booking_rejected', 'modification_rejected')),
+  kind                   text NOT NULL
+                         CHECK (kind IN ('guest_relocated', 'booking_rejected', 'modification_rejected')),
   winner_reservation_id  uuid REFERENCES reservations(id),
   loser_reservation_id   uuid NOT NULL REFERENCES reservations(id),
-  created_at             timestamptz NOT NULL DEFAULT now()
+  moved_to_unit_id       uuid REFERENCES units(id),
+  created_at             timestamptz NOT NULL DEFAULT now(),
+  CHECK ((kind = 'guest_relocated') = (moved_to_unit_id IS NOT NULL))
 );
+
+-- What we tell a moved guest. Drafted outside the ingest txn, sent only once an operator
+-- approves it.
+CREATE TABLE guest_messages (
+  id             bigserial PRIMARY KEY,
+  tenant_id      uuid NOT NULL REFERENCES tenants(id),
+  conflict_id    bigint NOT NULL REFERENCES conflicts(id),
+  reservation_id uuid NOT NULL REFERENCES reservations(id),
+  status         text NOT NULL DEFAULT 'drafting'
+                 CHECK (status IN ('drafting', 'awaiting_approval', 'approved', 'sent', 'discarded')),
+  body           text,
+  drafted_by     text,
+  locked_until   timestamptz,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  decided_at     timestamptz,
+  sent_at        timestamptz
+);
+CREATE INDEX guest_messages_open ON guest_messages (status) WHERE status IN ('drafting', 'awaiting_approval');
 
 -- transactional outbox, written in the same txn as the change it describes
 --   sync_calendar: push the listing's full blocked calendar
 --   reservation_correction: set one reservation to a given state on its channel
+--   guest_message: an approved message to a guest, sent through the channel
 CREATE TABLE outbox (
   id           bigserial PRIMARY KEY,
   tenant_id    uuid NOT NULL REFERENCES tenants(id),
   listing_id   uuid NOT NULL REFERENCES channel_listings(id),
-  kind         text NOT NULL CHECK (kind IN ('sync_calendar', 'reservation_correction')),
+  kind         text NOT NULL CHECK (kind IN ('sync_calendar', 'reservation_correction', 'guest_message')),
   payload      jsonb NOT NULL DEFAULT '{}'::jsonb,
   status       text NOT NULL DEFAULT 'pending'
                CHECK (status IN ('pending', 'inflight', 'done', 'superseded', 'dead')),
@@ -104,7 +133,7 @@ CREATE TABLE audit_log (
 DO $$
 DECLARE t text;
 BEGIN
-  FOREACH t IN ARRAY ARRAY['units','channel_listings','reservations','conflicts','outbox','audit_log']
+  FOREACH t IN ARRAY ARRAY['units','channel_listings','reservations','conflicts','guest_messages','outbox','audit_log']
   LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format(
