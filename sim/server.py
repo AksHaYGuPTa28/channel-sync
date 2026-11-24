@@ -15,12 +15,15 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from app import guest_comms
 from sim.scenario import CHANNELS, ChaosRun, Params
 
 DIST = Path(__file__).resolve().parent.parent / "dashboard" / "dist"
 
 app = FastAPI(title="channel-sync control room")
 current: dict = {"run": None, "task": None}
+# an LLM drafts guest messages when ANTHROPIC_API_KEY is set (or GUEST_DRAFTER=llm)
+drafter = guest_comms.make_drafter()
 
 
 class RunRequest(BaseModel):
@@ -45,7 +48,7 @@ async def start_run(req: RunRequest):
     if current["run"]:
         await current["run"].close()
 
-    run = ChaosRun(Params(**req.model_dump()))
+    run = ChaosRun(Params(**req.model_dump()), drafter=drafter)
     current["run"] = run
     current["task"] = asyncio.create_task(run.run())
     return {"phase": run.phase}
@@ -60,6 +63,35 @@ async def set_outage(channel: str, req: OutageRequest):
         raise HTTPException(409, "Outages can only be toggled while guests are booking.")
     run.set_outage(channel, req.down)
     return {"channel": channel, "down": req.down}
+
+
+class ApproveRequest(BaseModel):
+    body: str | None = None
+
+
+def _pool():
+    run = current["run"]
+    if run is None or run.pool is None:
+        raise HTTPException(409, "Start a run first.")
+    return run.pool
+
+
+@app.post("/api/inbox/{message_id}/approve")
+async def approve_message(message_id: int, req: ApproveRequest):
+    try:
+        await guest_comms.approve(_pool(), message_id, req.body)
+    except guest_comms.InboxError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    return {"ok": True}
+
+
+@app.post("/api/inbox/{message_id}/discard")
+async def discard_message(message_id: int):
+    try:
+        await guest_comms.discard(_pool(), message_id)
+    except guest_comms.InboxError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    return {"ok": True}
 
 
 @app.get("/api/state")
@@ -86,6 +118,6 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
-    print(f"http://localhost:{port}")
+    print(f"http://localhost:{port}  (guest messages drafted by {type(drafter).__name__})")
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     asyncio.run(uvicorn.Server(config).serve())

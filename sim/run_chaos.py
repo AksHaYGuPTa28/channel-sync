@@ -45,11 +45,20 @@ def print_report(r: dict) -> None:
             f"corrections={s['corrections_applied']}"
         )
     print(f"events        {e['events']}")
-    print(f"conflicts     {e['conflicts']}")
+    c = e["conflicts"]
+    print(
+        f"clashes       {sum(c.values())}: {c.get('guest_relocated', 0)} guests moved to another unit, "
+        f"{c.get('booking_rejected', 0)} cancelled, "
+        f"{c.get('modification_rejected', 0)} date changes refused"
+    )
+    print(f"guest msgs    {e['guest_messages']}")
     print(f"reservations  {e['reservations']}")
     print(f"outbox        {e['outbox']} retries={e['push_retries']}")
     print(f"push ms       {e['push_latency_ms']}")
-    print(f"deadlocks     {e['ingest_deadlock_retries']} retried")
+    print(
+        f"deadlocks     {e['ingest_deadlock_retries']} retried; "
+        f"{e['relocations_gave_up_busy']} moves given up because every free unit was busy"
+    )
     print(f"breaker trips {r['circuit_breaker_opens']}")
     print(f"reconciler    {r['healed_by_reconciler']}")
     print()

@@ -1,7 +1,8 @@
 """Chaos scenario shared by the CLI (run_chaos) and the control room (server).
 
 Runs the real engine against three mock channels, throws guest traffic at them, lets things
-settle and then checks that nothing got double booked anywhere.
+settle and then checks that nothing got double booked anywhere. Nobody approves guest messages
+during a run; the control room's inbox is for that.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from app import metrics
 from app.api import create_app
 from app.channel_client import ChannelClient
 from app.db import create_pool, reset_schema
+from app.guest_comms import Drafter, TemplateDrafter, inbox, run_drafter
 from app.reconciler import ReconcileReport, reconcile_once
 from app.worker import run_worker
 from sim.mock_channel import Chaos, Listing, MockChannel, nights
@@ -26,6 +28,15 @@ CHANNELS = ["airbnb", "booking", "vrbo"]
 BASE_DATE = date(2027, 3, 1)
 HORIZON_DAYS = 45
 BOARD_DAYS = HORIZON_DAYS + 5  # stays can run past the last check-in date
+
+
+def room_type(unit: int) -> tuple[str, int]:
+    """12 units: six 1-beds, four 2-beds, two 3-beds."""
+    if unit < 6:
+        return "1-bed", 1
+    if unit < 10:
+        return "2-bed", 2
+    return "3-bed", 3
 
 
 @dataclass
@@ -58,8 +69,9 @@ def listing_id(channel: str, unit: int) -> str:
 
 
 class ChaosRun:
-    def __init__(self, params: Params):
+    def __init__(self, params: Params, drafter: Drafter | None = None):
         self.p = params
+        self.drafter = drafter or TemplateDrafter()
         self.rng = random.Random(params.seed)
         self.phase = "starting"
         self.started = time.monotonic()
@@ -73,7 +85,11 @@ class ChaosRun:
         self.pool = None
         self.chans: dict[str, MockChannel] = {}
         self.client: ChannelClient | None = None
-        self._stop = asyncio.Event()
+        self.unit_index: dict = {}  # unit uuid -> number used in listing ids
+        self.moved: dict[tuple[str, str], int] = {}  # (channel, reservation) -> unit, if relocated
+        self._stop = asyncio.Event()  # guests, sampling, reconciler
+        self._shutdown = asyncio.Event()  # workers and drafter run until close()
+        self._tasks: list[asyncio.Task] = []
 
     async def run(self) -> dict:
         await reset_schema()
@@ -92,8 +108,13 @@ class ChaosRun:
         )
         await self._seed()
 
-        workers = [
-            asyncio.create_task(run_worker(self.pool, self.client, self._stop)) for _ in range(self.p.workers)
+        # workers outlive the run, so messages the operator approves afterwards still go out
+        self._tasks = [
+            *(
+                asyncio.create_task(run_worker(self.pool, self.client, self._shutdown))
+                for _ in range(self.p.workers)
+            ),
+            asyncio.create_task(run_drafter(self.pool, self.drafter, self._shutdown)),
         ]
         background = [asyncio.create_task(self._reconcile_loop()), asyncio.create_task(self._sample_loop())]
 
@@ -111,24 +132,32 @@ class ChaosRun:
         self.converge_s = time.monotonic() - t1
 
         self._stop.set()
-        await asyncio.gather(*workers, *background, return_exceptions=True)
+        await asyncio.gather(*background, return_exceptions=True)
+        await self._wait_drafted()
         await self._sample()
         self.checks = await self.verify()
         self.phase = "verified"
         return await self.report()
 
     async def close(self) -> None:
+        self._stop.set()
+        self._shutdown.set()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
         if self.pool is not None:
             await self.pool.close()
 
     async def _seed(self) -> None:
         tenant = await self.pool.fetchval("INSERT INTO tenants (name) VALUES ('Demo Operator') RETURNING id")
         for u in range(self.p.units):
+            kind, bedrooms = room_type(u)
             unit_id = await self.pool.fetchval(
-                "INSERT INTO units (tenant_id, name) VALUES ($1, $2) RETURNING id",
+                "INSERT INTO units (tenant_id, name, room_type, bedrooms) VALUES ($1, $2, $3, $4) RETURNING id",
                 tenant,
                 f"Unit {u + 1:02d}",
+                kind,
+                bedrooms,
             )
+            self.unit_index[unit_id] = u
             for name, ch in self.chans.items():
                 ext = listing_id(name, u)
                 await self.pool.execute(
@@ -218,12 +247,31 @@ class ChaosRun:
     async def _outbox_open(self) -> int:
         return await self.pool.fetchval("SELECT count(*) FROM outbox WHERE status IN ('pending', 'inflight')")
 
+    async def _wait_drafted(self, max_wait: float = 30) -> None:
+        # instant with the template drafter; a model takes a few seconds per batch
+        deadline = time.monotonic() + max_wait
+        while time.monotonic() < deadline and await self.pool.fetchval(  # noqa: ASYNC110 (polling the db)
+            "SELECT count(*) FROM guest_messages WHERE status = 'drafting'"
+        ):
+            await asyncio.sleep(0.1)
+
     async def _wait_outbox_drained(self, max_wait: float = 30) -> None:
         deadline = time.monotonic() + max_wait
         while await self._outbox_open() and time.monotonic() < deadline:  # noqa: ASYNC110 (polling the db)
             await asyncio.sleep(0.05)
 
+    async def _refresh_moved(self) -> None:
+        rows = await self.pool.fetch(
+            """
+            SELECT r.channel, r.external_id, r.unit_id
+            FROM reservations r JOIN channel_listings cl ON cl.id = r.listing_id
+            WHERE r.unit_id <> cl.unit_id
+            """
+        )
+        self.moved = {(r["channel"], r["external_id"]): self.unit_index[r["unit_id"]] for r in rows}
+
     async def _sample(self) -> None:
+        await self._refresh_moved()
         row = await self.pool.fetchrow(
             """
             SELECT
@@ -244,22 +292,29 @@ class ChaosRun:
             }
         )
 
-    def _held_counts(self, unit: int) -> dict[int, int]:
-        """night -> number of guests holding it across all channels"""
-        counts: dict[int, int] = {}
+    def _occupancy(self) -> dict[int, dict[int, int]]:
+        """unit -> night -> number of guests sleeping there, going by the channels' bookings.
+
+        A relocated guest still holds a booking on their original listing but sleeps in the unit
+        we moved them to, so they're counted there.
+        """
+        occ: dict[int, dict[int, int]] = {u: {} for u in range(self.p.units)}
         for name, ch in self.chans.items():
-            for b in ch.listings[listing_id(name, unit)].bookings.values():
-                if b.status != "confirmed":
-                    continue
-                for night in nights(b.check_in, b.check_out):
-                    counts[night] = counts.get(night, 0) + 1
-        return counts
+            for ext, lst in ch.listings.items():
+                listed_unit = int(ext.rsplit("-L", 1)[1])
+                for b in lst.bookings.values():
+                    if b.status != "confirmed":
+                        continue
+                    counts = occ[self.moved.get((name, b.reservation_id), listed_unit)]
+                    for night in nights(b.check_in, b.check_out):
+                        counts[night] = counts.get(night, 0) + 1
+        return occ
 
     def _oversold_nights(self) -> int:
-        return sum(1 for u in range(self.p.units) for c in self._held_counts(u).values() if c > 1)
+        return sum(1 for counts in self._occupancy().values() for c in counts.values() if c > 1)
 
     async def board(self) -> list[dict]:
-        units = await self.pool.fetch("SELECT id, name FROM units ORDER BY name")
+        units = await self.pool.fetch("SELECT id, name, room_type FROM units ORDER BY name")
         rows = await self.pool.fetch(
             "SELECT unit_id, channel, lower(stay) s, upper(stay) e FROM reservations WHERE status = 'confirmed'"
         )
@@ -268,10 +323,11 @@ class ChaosRun:
             for night in nights(r["s"], r["e"]):
                 owner[(r["unit_id"], night)] = r["channel"]
 
+        occupancy = self._occupancy()
         board = []
         for u, unit in enumerate(units):
             truth = {n for (uid, n) in owner if uid == unit["id"]}
-            held = self._held_counts(u)
+            held = occupancy[u]
             stale: dict[int, list[str]] = {}
             for name, ch in self.chans.items():
                 for night in ch.listings[listing_id(name, u)].blocked ^ truth:
@@ -281,16 +337,17 @@ class ChaosRun:
             for d in range(BOARD_DAYS):
                 night = (BASE_DATE + timedelta(days=d)).toordinal()
                 cells.append([owner.get((unit["id"], night)), held.get(night, 0) > 1, stale.get(night, [])])
-            board.append({"unit": unit["name"], "cells": cells})
+            board.append({"unit": unit["name"], "room_type": unit["room_type"], "cells": cells})
         return board
 
     async def recent_conflicts(self, limit: int = 14) -> list[dict]:
         rows = await self.pool.fetch(
             """
-            SELECT c.created_at, c.kind, u.name AS unit, w.channel AS winner, l.channel AS loser,
-                   lower(l.stay) AS s, upper(l.stay) AS e
+            SELECT c.created_at, c.kind, u.name AS unit, m.name AS moved_to, w.channel AS winner,
+                   l.channel AS loser, lower(l.stay) AS s, upper(l.stay) AS e
             FROM conflicts c
             JOIN units u ON u.id = c.unit_id
+            LEFT JOIN units m ON m.id = c.moved_to_unit_id
             JOIN reservations l ON l.id = c.loser_reservation_id
             LEFT JOIN reservations w ON w.id = c.winner_reservation_id
             ORDER BY c.id DESC
@@ -303,6 +360,7 @@ class ChaosRun:
                 "at": r["created_at"].isoformat(),
                 "kind": r["kind"],
                 "unit": r["unit"],
+                "moved_to": r["moved_to"],
                 "winner": r["winner"],
                 "loser": r["loser"],
                 "check_in": r["s"].isoformat(),
@@ -335,6 +393,7 @@ class ChaosRun:
             "timeline": self.timeline[-240:],
             "board": await self.board(),
             "conflicts": await self.recent_conflicts(),
+            "inbox": await inbox(self.pool, limit=8),
             "checks": self.checks,
             "base_date": BASE_DATE.isoformat(),
         }
@@ -361,12 +420,13 @@ class ChaosRun:
         }
 
     async def verify(self) -> dict:
+        await self._refresh_moved()
         db_double = await self.pool.fetchval(metrics.DOUBLE_BOOKINGS_SQL)
         rows = await self.pool.fetch(
             """
-            SELECT r.channel, r.external_id, lower(r.stay) s, upper(r.stay) e, cl.unit_id
-            FROM reservations r JOIN channel_listings cl ON cl.id = r.listing_id
-            WHERE r.status = 'confirmed'
+            SELECT channel, external_id, lower(stay) s, upper(stay) e, unit_id
+            FROM reservations
+            WHERE status = 'confirmed'
             """
         )
         db_set = {(r["channel"], r["external_id"], r["s"], r["e"]) for r in rows}
