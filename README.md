@@ -77,7 +77,7 @@ dashboard/           React + TS
 tests/
 ```
 
-## Todo
+## What's next
 
 - real Channex / Hostaway adapters
 - relocation that knows about location, price and operator rules, not only room type and size
