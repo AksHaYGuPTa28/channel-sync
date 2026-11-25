@@ -111,7 +111,8 @@ if DIST.exists():
 
     @app.get("/{path:path}")
     async def index(path: str):
-        return FileResponse(DIST / "index.html")
+        # assets have hashed names, but index.html doesn't, so make browsers revalidate it
+        return FileResponse(DIST / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 if __name__ == "__main__":

@@ -151,13 +151,18 @@ code {
   border-radius: 4px;
   color: var(--ink);
 }
+/* inputs and button share the first row; the checkbox gets a full row of its own below */
+.run-form button {
+  order: 1;
+}
 .run-form .check {
+  order: 2;
+  flex-basis: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 15rem;
-  padding-bottom: 8px;
   color: var(--ink);
+  cursor: pointer;
 }
 .run-form .check input {
   width: 18px;
@@ -685,6 +690,13 @@ button.primary.small {
   }
   .run-form label {
     flex: 1 1 8rem;
+  }
+  .run-form .check {
+    flex-basis: 100%;
+  }
+  .run-form button {
+    order: 3;
+    width: 100%;
   }
   .channel-stats {
     grid-template-columns: 1fr;
