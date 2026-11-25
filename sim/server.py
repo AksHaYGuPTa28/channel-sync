@@ -6,6 +6,7 @@ python -m sim.server        # http://localhost:8000
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -24,6 +25,10 @@ app = FastAPI(title="channel-sync control room")
 current: dict = {"run": None, "task": None}
 # an LLM drafts guest messages when ANTHROPIC_API_KEY is set (or GUEST_DRAFTER=llm)
 drafter = guest_comms.make_drafter()
+
+# On a public demo box anyone can press start, so cap how big a run can get.
+MAX_ACTIONS = int(os.getenv("MAX_ACTIONS", "20000"))
+MAX_DURATION = float(os.getenv("MAX_DURATION", "120"))
 
 
 class RunRequest(BaseModel):
@@ -48,7 +53,10 @@ async def start_run(req: RunRequest):
     if current["run"]:
         await current["run"].close()
 
-    run = ChaosRun(Params(**req.model_dump()), drafter=drafter)
+    params = req.model_dump()
+    params["actions"] = min(req.actions, MAX_ACTIONS)
+    params["duration"] = min(req.duration, MAX_DURATION)
+    run = ChaosRun(Params(**params), drafter=drafter)
     current["run"] = run
     current["task"] = asyncio.create_task(run.run())
     return {"phase": run.phase}
@@ -118,7 +126,8 @@ if DIST.exists():
 if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
-    print(f"http://localhost:{port}  (guest messages drafted by {type(drafter).__name__})")
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.getenv("PORT", "8000"))
+    host = os.getenv("HOST", "127.0.0.1")
+    print(f"http://{host}:{port}  (guest messages drafted by {type(drafter).__name__})", flush=True)
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
     asyncio.run(uvicorn.Server(config).serve())
