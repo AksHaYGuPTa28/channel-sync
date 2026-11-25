@@ -2,6 +2,8 @@
 
 Availability sync for short-term rentals listed on several booking channels at once. A night can't be sold twice, even when channels oversell, send webhooks twice or out of order, drop them, rate limit us or go down. When two channels do sell the same night, the second guest is moved to a comparable free apartment instead of being cancelled, and an operator approves what they're told.
 
+![A 3,000-guest run with Booking.com going offline halfway. Clashes get sorted out, losing guests are moved, and no night is sold twice.](docs/demo.gif)
+
 FastAPI + Postgres (works on Supabase). Design notes and trade-offs are in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Where this fits
